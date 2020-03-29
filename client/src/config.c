@@ -28,16 +28,16 @@ Place, Suite 330, Boston, MA 02111-1307 USA
 #include <unistd.h>
 
 // forwards
-static bool       optRendererParse       (struct Option * opt, const char * str);
-static StringList optRendererValues      (struct Option * opt);
-static char *     optRendererToString    (struct Option * opt);
-static bool       optPosParse            (struct Option * opt, const char * str);
-static StringList optPosValues           (struct Option * opt);
-static char *     optPosToString         (struct Option * opt);
-static bool       optSizeParse           (struct Option * opt, const char * str);
-static StringList optSizeValues          (struct Option * opt);
-static char *     optSizeToString        (struct Option * opt);
-static char *     optScancodeToString    (struct Option * opt);
+static bool       optRendererParse   (struct Option * opt, const char * str);
+static StringList optRendererValues  (struct Option * opt);
+static char *     optRendererToString(struct Option * opt);
+static bool       optPosParse        (struct Option * opt, const char * str);
+static StringList optPosValues       (struct Option * opt);
+static char *     optPosToString     (struct Option * opt);
+static bool       optSizeParse       (struct Option * opt, const char * str);
+static StringList optSizeValues      (struct Option * opt);
+static char *     optSizeToString    (struct Option * opt);
+static char *     optScancodeToString(struct Option * opt);
 
 static void doLicense();
 
@@ -51,22 +51,6 @@ static struct Option options[] =
     .shortopt       = 'C',
     .type           = OPTION_TYPE_STRING,
     .value.x_string = NULL,
-  },
-  {
-    .module         = "app",
-    .name           = "shmFile",
-    .description    = "The path to the shared memory file",
-    .shortopt       = 'f',
-    .type           = OPTION_TYPE_STRING,
-    .value.x_string = "/dev/shm/looking-glass",
-  },
-  {
-    .module         = "app",
-    .name           = "shmSize",
-    .description    = "Specify the size in MB of the shared memory file (0 = detect)",
-    .shortopt       = 'L',
-    .type           = OPTION_TYPE_INT,
-    .value.x_int    = 0,
   },
   {
     .module        = "app",
@@ -148,6 +132,13 @@ static struct Option options[] =
     .name           = "keepAspect",
     .description    = "Maintain the correct aspect ratio",
     .shortopt       = 'r',
+    .type           = OPTION_TYPE_BOOL,
+    .value.x_bool   = true,
+  },
+  {
+    .module         = "win",
+    .name           = "forceAspect",
+    .description    = "Force the window to maintain the aspect ratio",
     .type           = OPTION_TYPE_BOOL,
     .value.x_bool   = true,
   },
@@ -380,8 +371,6 @@ bool config_load(int argc, char * argv[])
   }
 
   // setup the application params for the basic types
-  params.shmFile            = option_get_string("app", "shmFile"           );
-  params.shmSize            = option_get_int   ("app", "shmSize"           ) * 1048576;
   params.cursorPollInterval = option_get_int   ("app", "cursorPollInterval");
   params.framePollInterval  = option_get_int   ("app", "framePollInterval" );
 
@@ -389,6 +378,7 @@ bool config_load(int argc, char * argv[])
   params.autoResize    = option_get_bool  ("win", "autoResize"   );
   params.allowResize   = option_get_bool  ("win", "allowResize"  );
   params.keepAspect    = option_get_bool  ("win", "keepAspect"   );
+  params.forceAspect   = option_get_bool  ("win", "forceAspect"  );
   params.borderless    = option_get_bool  ("win", "borderless"   );
   params.fullscreen    = option_get_bool  ("win", "fullScreen"   );
   params.maximize      = option_get_bool  ("win", "maximize"     );
@@ -459,6 +449,9 @@ static void doLicense()
 
 static bool optRendererParse(struct Option * opt, const char * str)
 {
+  if (!str)
+    return false;
+
   if (strcasecmp(str, "auto") == 0)
   {
     params.forceRenderer = false;
@@ -500,6 +493,9 @@ static char * optRendererToString(struct Option * opt)
 
 static bool optPosParse(struct Option * opt, const char * str)
 {
+  if (!str)
+    return false;
+
   if (strcmp(str, "center") == 0)
   {
     params.center = true;
@@ -537,6 +533,9 @@ static char * optPosToString(struct Option * opt)
 
 static bool optSizeParse(struct Option * opt, const char * str)
 {
+  if (!str)
+    return false;
+
   if (sscanf(str, "%dx%d", &params.w, &params.h) == 2)
   {
     if (params.w < 1 || params.h < 1)

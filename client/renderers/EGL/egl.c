@@ -22,6 +22,7 @@ Place, Suite 330, Boston, MA 02111-1307 USA
 #include "common/debug.h"
 #include "common/option.h"
 #include "common/sysinfo.h"
+#include "common/time.h"
 #include "utils.h"
 #include "dynamic/fonts.h"
 
@@ -53,7 +54,6 @@ struct Inst
   LG_RendererParams params;
   struct Options    opt;
 
-  EGLNativeDisplayType nativeDisp;
   EGLNativeWindowType  nativeWind;
   EGLDisplay           display;
   EGLConfig            configs;
@@ -296,7 +296,7 @@ bool egl_on_mouse_event(void * opaque, const bool visible, const int x, const in
   return true;
 }
 
-bool egl_on_frame_event(void * opaque, const LG_RendererFormat format, const uint8_t * data)
+bool egl_on_frame_event(void * opaque, const LG_RendererFormat format, const FrameBuffer * frame)
 {
   struct Inst * this = (struct Inst *)opaque;
   this->sourceChanged = (
@@ -312,7 +312,7 @@ bool egl_on_frame_event(void * opaque, const LG_RendererFormat format, const uin
 
   this->useNearest = this->width < format.width || this->height < format.height;
 
-  if (!egl_desktop_prepare_update(this->desktop, this->sourceChanged, format, data))
+  if (!egl_desktop_prepare_update(this->desktop, this->sourceChanged, format, frame))
   {
     DEBUG_INFO("Failed to prepare to update the desktop");
     return false;
@@ -368,11 +368,26 @@ bool egl_render_startup(void * opaque, SDL_Window * window)
     return false;
   }
 
+  const char *client_exts = eglQueryString(NULL, EGL_EXTENSIONS);
+  DEBUG_INFO("Supported extensions: %s", client_exts);
+
+  bool useNative = false;
+  if (strstr(client_exts, "EGL_KHR_platform_base") != NULL)
+    useNative = true;
+
+  DEBUG_INFO("use native: %s", useNative ? "true" : "false");
+
   switch(wminfo.subsystem)
   {
     case SDL_SYSWM_X11:
     {
-      this->nativeDisp = (EGLNativeDisplayType)wminfo.info.x11.display;
+      if (!useNative)
+        this->display = eglGetPlatformDisplay(EGL_PLATFORM_X11_KHR, wminfo.info.x11.display, NULL);
+      else
+      {
+        EGLNativeDisplayType native = (EGLNativeDisplayType)wminfo.info.x11.display;
+        this->display = eglGetDisplay(native);
+      }
       this->nativeWind = (EGLNativeWindowType)wminfo.info.x11.window;
       break;
     }
@@ -382,7 +397,13 @@ bool egl_render_startup(void * opaque, SDL_Window * window)
     {
       int width, height;
       SDL_GetWindowSize(window, &width, &height);
-      this->nativeDisp = (EGLNativeDisplayType)wminfo.info.wl.display;
+      if (!useNative)
+        this->display = eglGetPlatformDisplay(EGL_PLATFORM_WAYLAND_KHR, wminfo.info.wl.display, NULL);
+      else
+      {
+        EGLNativeDisplayType native = (EGLNativeDisplayType)wminfo.info.wl.display;
+        this->display = eglGetDisplay(native);
+      }
       this->nativeWind = (EGLNativeWindowType)wl_egl_window_create(wminfo.info.wl.surface, width, height);
       break;
     }
@@ -393,7 +414,6 @@ bool egl_render_startup(void * opaque, SDL_Window * window)
       return false;
   }
 
-  this->display = eglGetDisplay(this->nativeDisp);
   if (this->display == EGL_NO_DISPLAY)
   {
     DEBUG_ERROR("eglGetDisplay failed");

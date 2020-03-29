@@ -1,6 +1,6 @@
 /*
 Looking Glass - KVM FrameRelay (KVMFR) Client
-Copyright (C) 2017-2019 Geoffrey McRae <geoff@hostfission.com>
+Copyright (C) 2017-2020 Geoffrey McRae <geoff@hostfission.com>
 https://looking-glass.hostfission.com
 
 This program is free software; you can redistribute it and/or modify it under
@@ -17,14 +17,20 @@ this program; if not, write to the Free Software Foundation, Inc., 59 Temple
 Place, Suite 330, Boston, MA 02111-1307 USA
 */
 
-#include <stdbool.h>
-#include <stdint.h>
+#pragma once
 
-struct spice_password
+#include <stdbool.h>
+
+struct IVSHMEM
 {
-  char         * data;
   unsigned int   size;
+  void         * mem;
+
+  // internal use
+  void * opaque;
 };
 
-bool spice_rsa_encrypt_password(uint8_t * pub_key, char * password, struct spice_password * result);
-void spice_rsa_free_password(struct spice_password * pass);
+void ivshmemOptionsInit();
+bool ivshmemOpen(struct IVSHMEM * dev);
+bool ivshmemOpenDev(struct IVSHMEM * dev, const char * shmDev);
+void ivshmemClose(struct IVSHMEM * dev);

@@ -23,8 +23,10 @@ Place, Suite 330, Boston, MA 02111-1307 USA
 #include "interface/app.h"
 #include "dynamic/renderers.h"
 #include "dynamic/clipboards.h"
+#include "common/ivshmem.h"
 
 #include "spice/spice.h"
+#include <lgmp/client.h>
 
 struct AppState
 {
@@ -41,30 +43,47 @@ struct AppState
   LG_RendererRect      dstRect;
   SDL_Point            cursor;
   bool                 cursorVisible;
-  bool                 haveCursorPos;
-  float                scaleX, scaleY;
-  float                accX, accY;
+
+  bool  serverMode;
+  bool  haveCursorPos;
+  bool  drawCursor;
+  bool  cursorInView;
+  bool  updateCursor;
+  bool  initialCursorSync;
+  float scaleX, scaleY;
+  float accX, accY;
+  int   curLastX;
+  int   curLastY;
+  bool  haveCurLocal;
+  int   curLocalX;
+  int   curLocalY;
+  bool  haveAligned;
 
   const LG_Renderer  * lgr;
   void               * lgrData;
   bool                 lgrResize;
 
-  SDL_Thread         * t_frame;
-
   const LG_Clipboard * lgc;
   SpiceDataType        cbType;
   struct ll          * cbRequestList;
 
+  SDL_SysWMinfo        wminfo;
   SDL_Window         * window;
-  int                  shmFD;
-  struct KVMFRHeader * shm;
-  unsigned int         shmSize;
+
+  struct IVSHMEM       shm;
+  PLGMPClient          lgmp;
+  PLGMPClientQueue     frameQueue;
+  PLGMPClientQueue     pointerQueue;
 
   uint64_t          frameTime;
   uint64_t          lastFrameTime;
   uint64_t          renderTime;
   uint64_t          frameCount;
   uint64_t          renderCount;
+
+
+  uint64_t resizeTimeout;
+  bool     resizeDone;
 
   KeybindHandle kbFS;
   KeybindHandle kbInput;
@@ -81,6 +100,7 @@ struct AppParams
   bool         autoResize;
   bool         allowResize;
   bool         keepAspect;
+  bool         forceAspect;
   bool         borderless;
   bool         fullscreen;
   bool         maximize;
@@ -88,8 +108,6 @@ struct AppParams
   bool         center;
   int          x, y;
   unsigned int w, h;
-  const char * shmFile;
-  unsigned int shmSize;
   unsigned int fpsLimit;
   bool         showFPS;
   bool         useSpiceInput;

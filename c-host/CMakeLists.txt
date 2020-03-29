@@ -41,7 +41,6 @@ get_filename_component(PROJECT_TOP "${PROJECT_SOURCE_DIR}/.." ABSOLUTE)
 include_directories(
 	${PROJECT_SOURCE_DIR}/include
 	${CMAKE_BINARY_DIR}/include
-        ${PROJECT_TOP}/vendor/ivshmem
 	${PKGCONFIG_INCLUDE_DIRS}
 	${GMP_INCLUDE_DIR}
 )
@@ -53,7 +52,8 @@ set(SOURCES
 	src/app.c
 )
 
-add_subdirectory("${PROJECT_TOP}/common" "${CMAKE_BINARY_DIR}/common")
+add_subdirectory("${PROJECT_TOP}/common"          "${CMAKE_BINARY_DIR}/common")
+add_subdirectory("${PROJECT_TOP}/repos/LGMP/lgmp" "${CMAKE_BINARY_DIR}/lgmp"  )
 add_subdirectory(platform)
 
 if(WIN32)
@@ -64,6 +64,7 @@ endif()
 target_link_libraries(looking-glass-host
 	lg_common
 	platform
+	lgmp
 )
 set_target_properties(looking-glass-host PROPERTIES LINK_FLAGS "-Wl,--gc-sections")
 install(PROGRAMS ${CMAKE_BINARY_DIR}/looking-glass-host DESTINATION bin/ COMPONENT binary)
