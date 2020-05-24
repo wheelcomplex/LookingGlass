@@ -87,6 +87,7 @@ struct AppState
 
   KeybindHandle kbFS;
   KeybindHandle kbInput;
+  KeybindHandle kbQuit;
   KeybindHandle kbMouseSensInc;
   KeybindHandle kbMouseSensDec;
   KeybindHandle kbCtrlAltFn[12];
@@ -108,7 +109,7 @@ struct AppParams
   bool         center;
   int          x, y;
   unsigned int w, h;
-  unsigned int fpsLimit;
+  unsigned int fpsMin;
   bool         showFPS;
   bool         useSpiceInput;
   bool         useSpiceClipboard;

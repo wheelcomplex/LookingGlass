@@ -62,6 +62,7 @@ static int renderThread(void * unused);
 static int frameThread (void * unused);
 
 static LGEvent  *e_startup = NULL;
+static LGEvent  *e_frame   = NULL;
 static LGThread *t_spice   = NULL;
 static LGThread *t_render  = NULL;
 static LGThread *t_cursor  = NULL;
@@ -147,36 +148,29 @@ static int renderThread(void * unused)
   /* signal to other threads that the renderer is ready */
   lgSignalEvent(e_startup);
 
-  unsigned int resyncCheck = 0;
+  int resyncCheck = 0;
   struct timespec time;
-  clock_gettime(CLOCK_MONOTONIC, &time);
+  clock_gettime(CLOCK_REALTIME, &time);
 
   while(state.running)
   {
-    // if our clock is too far out of sync, resync it
-    // this can happen when switching to/from a TTY, or due to clock drift
-    // we only check this once every 100 frames
-    if (++resyncCheck == 100)
+    if (state.frameTime > 0)
     {
-      resyncCheck = 0;
+      tsAdd(&time, state.frameTime);
 
-      struct timespec tmp;
-      clock_gettime(CLOCK_MONOTONIC, &tmp);
-      if (tmp.tv_nsec - time.tv_nsec < 0)
+      // if our clock is too far out of sync, resync it
+      // this can happen when switching to/from a TTY, or due to clock drift
+      // we only check this once every 100 frames
+      if (++resyncCheck == 100)
       {
-        tmp.tv_sec -= time.tv_sec - 1;
-        tmp.tv_nsec = 1000000000 + tmp.tv_nsec - time.tv_nsec;
-      }
-      else
-      {
-        tmp.tv_sec  -= time.tv_sec;
-        tmp.tv_nsec -= time.tv_nsec;
-      }
-      const unsigned long diff = tmp.tv_sec * 1000000000 + tmp.tv_nsec;
-      if (diff > state.frameTime)
-      {
-        DEBUG_INFO("Timer drift detected, %lu is > %lu", diff, state.frameTime);
-        clock_gettime(CLOCK_MONOTONIC, &time);
+        resyncCheck = 0;
+
+        struct timespec end, diff;
+        clock_gettime(CLOCK_REALTIME, &end);
+        tsDiff(&diff, &time, &end);
+        if (diff.tv_sec > 0 || diff.tv_nsec > 1000000000 || // 100ms
+            diff.tv_sec < 0 || diff.tv_nsec < 0)            // underflow
+          clock_gettime(CLOCK_REALTIME, &time);
       }
     }
 
@@ -209,17 +203,6 @@ static int renderThread(void * unused)
       }
     }
 
-    uint64_t nsec = time.tv_nsec + state.frameTime;
-    if (nsec > 1e9)
-    {
-      time.tv_nsec = nsec - 1e9;
-      ++time.tv_sec;
-    }
-    else
-      time.tv_nsec = nsec;
-
-    clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &time, NULL);
-
     if (!state.resizeDone && state.resizeTimeout < microtime())
     {
       SDL_SetWindowSize(
@@ -229,6 +212,9 @@ static int renderThread(void * unused)
       );
       state.resizeDone = true;
     }
+
+    if (state.frameTime > 0)
+      lgWaitEventAbs(e_frame, &time);
   }
 
   state.running = false;
@@ -463,6 +449,8 @@ static int frameThread(void * unused)
     }
     lgmpClientMessageDone(queue);
     ++state.frameCount;
+
+    lgSignalEvent(e_frame);
   }
 
   lgmpClientUnsubscribe(&queue);
@@ -860,10 +848,16 @@ int eventFilter(void * userdata, SDL_Event * event)
             break;
 
           case EnterNotify:
+            state.curLocalX    = xe.xcrossing.x;
+            state.curLocalY    = xe.xcrossing.y;
+            state.haveCurLocal = true;
             handleWindowEnter();
             break;
 
           case LeaveNotify:
+            state.curLocalX    = xe.xcrossing.x;
+            state.curLocalY    = xe.xcrossing.y;
+            state.haveCurLocal = true;
             handleWindowLeave();
             break;
         }
@@ -1076,6 +1070,11 @@ static void toggle_input(SDL_Scancode key, void * opaque)
   );
 }
 
+static void quit(SDL_Scancode key, void * opaque)
+{
+  state.running = false;
+}
+
 static void mouse_sens_inc(SDL_Scancode key, void * opaque)
 {
   char * msg;
@@ -1124,6 +1123,7 @@ static void register_key_binds()
 {
   state.kbFS           = app_register_keybind(SDL_SCANCODE_F     , toggle_fullscreen, NULL);
   state.kbInput        = app_register_keybind(SDL_SCANCODE_I     , toggle_input     , NULL);
+  state.kbQuit         = app_register_keybind(SDL_SCANCODE_Q     , quit             , NULL);
   state.kbMouseSensInc = app_register_keybind(SDL_SCANCODE_INSERT, mouse_sens_inc   , NULL);
   state.kbMouseSensDec = app_register_keybind(SDL_SCANCODE_DELETE, mouse_sens_dec   , NULL);
 
@@ -1145,6 +1145,9 @@ static void release_key_binds()
 {
   app_release_keybind(&state.kbFS);
   app_release_keybind(&state.kbInput);
+  app_release_keybind(&state.kbQuit);
+  app_release_keybind(&state.kbMouseSensInc);
+  app_release_keybind(&state.kbMouseSensDec);
   for(int i = 0; i < 12; ++i)
     app_release_keybind(&state.kbCtrlAltFn[i]);
 }
@@ -1180,14 +1183,6 @@ static int lg_run()
        }
        DEBUG_INFO("SDL_VIDEODRIVER has been set to wayland");
      }
-  }
-
-  // warn about using FPS display until we can fix the font rendering to prevent lag spikes
-  if (params.showFPS)
-  {
-    DEBUG_WARN("================================================================================");
-    DEBUG_WARN("WARNING: The FPS display causes microstutters, this is a known issue"            );
-    DEBUG_WARN("================================================================================");
   }
 
   if (SDL_Init(SDL_INIT_VIDEO) < 0)
@@ -1315,24 +1310,13 @@ static int lg_run()
   // ensure renderer viewport is aware of the current window size
   updatePositionInfo();
 
-  //Auto detect active monitor refresh rate for FPS Limit if no FPS Limit was passed.
-  if (params.fpsLimit == -1)
-  {
-      SDL_DisplayMode current;
-      if (SDL_GetCurrentDisplayMode(SDL_GetWindowDisplayIndex(state.window), &current) == 0)
-      {
-          state.frameTime = 1e9 / (current.refresh_rate * 2);
-      }
-      else
-      {
-          DEBUG_WARN("Unable to capture monitor refresh rate using the default FPS Limit: 200");
-          state.frameTime = 1e9 / 200;
-      }
-  }
+  // use a default of 60FPS now that frame updates are host update triggered
+  if (params.fpsMin == -1)
+    state.frameTime = 1e9 / 60;
   else
   {
-      DEBUG_INFO("Using the FPS Limit from args: %d", params.fpsLimit);
-      state.frameTime = 1e9 / params.fpsLimit;
+      DEBUG_INFO("Using the FPS minimum from args: %d", params.fpsMin);
+      state.frameTime = 1e9 / params.fpsMin;
   }
 
   register_key_binds();
@@ -1417,6 +1401,13 @@ static int lg_run()
     return -1;
   }
 
+  // setup the new frame event
+  if (!(e_frame = lgCreateEvent(true, 0)))
+  {
+    DEBUG_ERROR("failed to create the frame event");
+    return -1;
+  }
+
   // start the renderThread so we don't just display junk
   if (!lgCreateThread("renderThread", renderThread, NULL, &t_render))
   {
@@ -1428,24 +1419,72 @@ static int lg_run()
   SDL_SetHintWithPriority(SDL_HINT_MOUSE_RELATIVE_MODE_WARP, "1", SDL_HINT_OVERRIDE);
   SDL_SetEventFilter(eventFilter, NULL);
 
+  // wait for startup to complete so that any error messages below are output at
+  // the end of the output
+  lgWaitEvent(e_startup, TIMEOUT_INFINITE);
+
   LGMP_STATUS status;
-  while(true)
+
+  while(state.running)
   {
     if ((status = lgmpClientInit(state.shm.mem, state.shm.size, &state.lgmp)) == LGMP_OK)
       break;
-
-    if (status == LGMP_ERR_INVALID_SESSION || status == LGMP_ERR_INVALID_MAGIC)
-    {
-      SDL_WaitEventTimeout(NULL, 1000);
-      continue;
-    }
 
     DEBUG_ERROR("lgmpClientInit Failed: %s", lgmpStatusString(status));
     return -1;
   }
 
+  /* this short timeout is to allow the LGMP host to update the timestamp before
+   * we start checking for a valid session */
+  SDL_WaitEventTimeout(NULL, 200);
+
+  uint32_t udataSize;
+  KVMFR *udata;
+
+  int waitCount = 0;
+  while(state.running)
+  {
+    if ((status = lgmpClientSessionInit(state.lgmp, &udataSize, (uint8_t **)&udata)) == LGMP_OK)
+      break;
+
+    if (status != LGMP_ERR_INVALID_SESSION && status != LGMP_ERR_INVALID_MAGIC)
+    {
+      DEBUG_ERROR("lgmpClientSessionInit Failed: %s", lgmpStatusString(status));
+      return -1;
+    }
+
+    if (waitCount++ == 0)
+    {
+      DEBUG_BREAK();
+      DEBUG_INFO("The host application seems to not be running");
+      DEBUG_INFO("Waiting for the host application to start...");
+    }
+
+    if (waitCount == 30)
+    {
+      DEBUG_BREAK();
+      DEBUG_INFO("Please check the host application is running and is the correct version");
+      DEBUG_INFO("Check the host log in your guest at %%TEMP%%\\looking-glass-host.txt");
+      DEBUG_INFO("Continuing to wait...");
+    }
+
+    SDL_WaitEventTimeout(NULL, 1000);
+  }
+
   if (!state.running)
     return -1;
+
+  if (udataSize != sizeof(KVMFR) ||
+      memcmp(udata->magic, KVMFR_MAGIC, sizeof(udata->magic)) != 0 ||
+      udata->version != KVMFR_VERSION)
+  {
+    DEBUG_BREAK();
+    DEBUG_ERROR("The host application is not compatible with this client");
+    DEBUG_ERROR("Expected KVMFR version %d", KVMFR_VERSION);
+    DEBUG_ERROR("This is not a Looking Glass error, do not report this");
+    DEBUG_BREAK();
+    return -1;
+  }
 
   DEBUG_INFO("Host ready, starting session");
 
@@ -1461,41 +1500,14 @@ static int lg_run()
     return -1;
   }
 
-  bool *closeAlert = NULL;
   while(state.running)
   {
-    SDL_WaitEventTimeout(NULL, 1000);
-
     if (!lgmpClientSessionValid(state.lgmp))
     {
       DEBUG_WARN("Session is invalid, has the host shutdown?");
       break;
     }
-
-    (void)closeAlert;
-    /*
-    if (closeAlert == NULL)
-    {
-      if (state.kvmfr->flags & KVMFR_HEADER_FLAG_PAUSED)
-      {
-        if (state.lgr && params.showAlerts)
-          state.lgr->on_alert(
-            state.lgrData,
-            LG_ALERT_WARNING,
-            "Stream Paused",
-            &closeAlert
-          );
-      }
-    }
-    else
-    {
-      if (!(state.kvmfr->flags & KVMFR_HEADER_FLAG_PAUSED))
-      {
-        *closeAlert = true;
-        closeAlert  = NULL;
-      }
-    }
-    */
+    SDL_WaitEventTimeout(NULL, 1000);
   }
 
   return 0;
@@ -1508,10 +1520,17 @@ static void lg_shutdown()
   if (t_render)
   {
     lgSignalEvent(e_startup);
+    lgSignalEvent(e_frame);
     lgJoinThread(t_render, NULL);
   }
 
   lgmpClientFree(&state.lgmp);
+
+  if (e_frame)
+  {
+    lgFreeEvent(e_frame);
+    e_frame = NULL;
+  }
 
   if (e_startup)
   {

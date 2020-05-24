@@ -77,7 +77,8 @@ static struct Option opengl_options[] =
     .description  = "Use GL_AMD_pinned_memory if it is available",
     .type         = OPTION_TYPE_BOOL,
     .value.x_bool = true
-  }
+  },
+  {0}
 };
 
 struct OpenGL_Options
@@ -563,8 +564,6 @@ bool opengl_render(void * opaque, SDL_Window * window)
       return false;
 
     case CONFIG_STATUS_NOOP :
-      break;
-
     case CONFIG_STATUS_OK   :
      if (!draw_frame(this))
        return false;
@@ -1275,14 +1274,19 @@ static bool draw_frame(struct Inst * this)
   glBindTexture(GL_TEXTURE_2D, this->frames[this->texIndex]);
   glBindBuffer(GL_PIXEL_UNPACK_BUFFER, this->vboID[this->texIndex]);
 
-  glPixelStorei(GL_UNPACK_ALIGNMENT  , 4);
-  glPixelStorei(GL_UNPACK_ROW_LENGTH , this->format.stride);
+  const int bpp = this->format.bpp / 8;
+  glPixelStorei(GL_UNPACK_ALIGNMENT , bpp);
+  glPixelStorei(GL_UNPACK_ROW_LENGTH, this->format.width);
 
   this->texPos = 0;
+
   framebuffer_read_fn(
     this->frame,
+    this->format.height,
+    this->format.width,
+    bpp,
+    this->format.pitch,
     opengl_buffer_fn,
-    this->format.height * this->format.stride * 4,
     this
   );
 

@@ -28,6 +28,7 @@ Place, Suite 330, Boston, MA 02111-1307 USA
 #include "common/thread.h"
 #include "common/ivshmem.h"
 #include "common/sysinfo.h"
+#include "common/time.h"
 
 #include <lgmp/host.h>
 
@@ -78,32 +79,23 @@ struct app
 
   bool       running;
   bool       reinit;
-  LGThread * lgmpThread;
+  LGTimer  * lgmpTimer;
   LGThread * frameThread;
 };
 
 static struct app app;
 
-static int lgmpThread(void * opaque)
+static bool lgmpTimer(void * opaque)
 {
   LGMP_STATUS status;
-  while(app.running)
+  if ((status = lgmpHostProcess(app.lgmp)) != LGMP_OK)
   {
-    if ((status = lgmpHostProcess(app.lgmp)) != LGMP_OK)
-    {
-      DEBUG_ERROR("lgmpHostProcess Failed: %s", lgmpStatusString(status));
-      break;
-    }
-
-    /*
-     * do not decrease this value too far, see:
-     * https://lists.gnu.org/archive/html/qemu-devel/2020-01/msg06331.html
-     */
-    usleep(100 * 1000);
+    DEBUG_ERROR("lgmpHostProcess Failed: %s", lgmpStatusString(status));
+    app.running = false;
+    return false;
   }
 
-  app.running = false;
-  return 0;
+  return true;
 }
 
 static int frameThread(void * opaque)
@@ -187,7 +179,7 @@ static int frameThread(void * opaque)
     fi->height  = frame.height;
     fi->stride  = frame.stride;
     fi->pitch   = frame.pitch;
-    fi->offset  = pageSize - sizeof(FrameBuffer);
+    fi->offset  = pageSize - FrameBufferStructSize;
     frameValid  = true;
 
     // put the framebuffer on the border of the next page
@@ -210,9 +202,9 @@ static int frameThread(void * opaque)
 bool startThreads()
 {
   app.running = true;
-  if (!lgCreateThread("LGMPThread", lgmpThread, NULL, &app.lgmpThread))
+  if (!lgCreateTimer(100, lgmpTimer, NULL, &app.lgmpTimer))
   {
-    DEBUG_ERROR("Failed to create the LGMP thread");
+    DEBUG_ERROR("Failed to create the LGMP timer");
     return false;
   }
 
@@ -239,12 +231,11 @@ bool stopThreads()
   }
   app.frameThread = NULL;
 
-  if (app.lgmpThread && !lgJoinThread(app.lgmpThread, NULL))
+  if (app.lgmpTimer)
   {
-    DEBUG_WARN("Failed to join the LGMP thread");
-    ok = false;
+    lgTimerDestroy(app.lgmpTimer);
+    app.lgmpTimer = NULL;
   }
-  app.lgmpThread = NULL;
 
   return ok;
 }
@@ -421,9 +412,16 @@ int app_main(int argc, char * argv[])
   DEBUG_INFO("IVSHMEM Size     : %u MiB", shmDev.size / 1048576);
   DEBUG_INFO("IVSHMEM Address  : 0x%" PRIXPTR, (uintptr_t)shmDev.mem);
   DEBUG_INFO("Max Pointer Size : %u KiB", (unsigned int)MAX_POINTER_SIZE / 1024);
+  DEBUG_INFO("KVMFR Version    : %u", KVMFR_VERSION);
+
+  KVMFR udata = {
+    .magic   = KVMFR_MAGIC,
+    .version = KVMFR_VERSION
+  };
 
   LGMP_STATUS status;
-  if ((status = lgmpHostInit(shmDev.mem, shmDev.size, &app.lgmp)) != LGMP_OK)
+  if ((status = lgmpHostInit(shmDev.mem, shmDev.size, &app.lgmp,
+          sizeof(udata), (uint8_t *)&udata)) != LGMP_OK)
   {
     DEBUG_ERROR("lgmpHostInit Failed: %s", lgmpStatusString(status));
     goto fail;

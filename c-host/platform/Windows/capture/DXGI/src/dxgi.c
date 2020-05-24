@@ -56,6 +56,7 @@ struct iface
   LARGE_INTEGER              perfFreq;
   LARGE_INTEGER              frameTime;
   bool                       stop;
+  HDESK                      desktop;
   IDXGIFactory1            * factory;
   IDXGIAdapter1            * adapter;
   IDXGIOutput              * output;
@@ -171,6 +172,27 @@ static bool dxgi_create(CaptureGetPointerBuffer getPointerBufferFn, CapturePostP
 static bool dxgi_init()
 {
   assert(this);
+
+  this->desktop = OpenInputDesktop(0, FALSE, GENERIC_READ);
+  if (!this->desktop)
+    DEBUG_WINERROR("Failed to open the desktop", GetLastError());
+  else
+  {
+    if (!SetThreadDesktop(this->desktop))
+    {
+      DEBUG_WINERROR("Failed to set thread desktop", GetLastError());
+      CloseDesktop(this->desktop);
+      this->desktop = NULL;
+    }
+  }
+
+  if (!this->desktop)
+  {
+    DEBUG_INFO("The above error(s) will prevent LG from being able to capture the secure desktop (UAC dialogs)");
+    DEBUG_INFO("This is not a failure, please do not report this as an issue.");
+    DEBUG_INFO("To fix this run LG using the PsExec SysInternals tool from Microsoft.");
+    DEBUG_INFO("https://docs.microsoft.com/en-us/sysinternals/downloads/psexec");
+  }
 
   // this is required for DXGI 1.5 support to function
   if (!dpiDone)
@@ -590,6 +612,13 @@ static bool dxgi_deinit()
   }
 
   LG_LOCK_FREE(this->deviceContextLock);
+
+  if (this->desktop)
+  {
+    CloseDesktop(this->desktop);
+    this->desktop = NULL;
+  }
+
   this->initialized = false;
   return true;
 }
@@ -613,6 +642,25 @@ static unsigned int dxgi_getMaxFrameSize()
   assert(this->initialized);
 
   return this->height * this->pitch;
+}
+
+static CaptureResult dxgi_hResultToCaptureResult(const HRESULT status)
+{
+  switch(status)
+  {
+    case S_OK:
+      return CAPTURE_RESULT_OK;
+
+    case DXGI_ERROR_WAIT_TIMEOUT:
+      return CAPTURE_RESULT_TIMEOUT;
+
+    case WAIT_ABANDONED:
+    case DXGI_ERROR_ACCESS_LOST:
+      return CAPTURE_RESULT_REINIT;
+
+    default:
+      return CAPTURE_RESULT_ERROR;
+  }
 }
 
 static CaptureResult dxgi_capture()
@@ -640,23 +688,15 @@ static CaptureResult dxgi_capture()
   else
     status = IDXGIOutputDuplication_AcquireNextFrame(this->dup, 1000, &frameInfo, &res);
 
-  switch(status)
+  result = dxgi_hResultToCaptureResult(status);
+  if (result != CAPTURE_RESULT_OK)
   {
-    case S_OK:
-      this->needsRelease = true;
-      break;
-
-    case DXGI_ERROR_WAIT_TIMEOUT:
-      return CAPTURE_RESULT_TIMEOUT;
-
-    case WAIT_ABANDONED:
-    case DXGI_ERROR_ACCESS_LOST:
-      return CAPTURE_RESULT_REINIT;
-
-    default:
+    if (result == CAPTURE_RESULT_ERROR)
       DEBUG_WINERROR("AcquireNextFrame failed", status);
-      return CAPTURE_RESULT_ERROR;
+    return result;
   }
+
+  this->needsRelease = true;
 
   if (frameInfo.LastPresentTime.QuadPart != 0)
   {
@@ -739,10 +779,12 @@ static CaptureResult dxgi_capture()
       DXGI_OUTDUPL_POINTER_SHAPE_INFO shapeInfo;
 
       LOCKED({status = IDXGIOutputDuplication_GetFramePointerShape(this->dup, bufferSize, pointerShape, &pointerShapeSize, &shapeInfo);});
-      if (FAILED(status))
+      result = dxgi_hResultToCaptureResult(status);
+      if (result != CAPTURE_RESULT_OK)
       {
-        DEBUG_WINERROR("Failed to get the new pointer shape", status);
-        return CAPTURE_RESULT_ERROR;
+        if (result == CAPTURE_RESULT_ERROR)
+          DEBUG_WINERROR("Failed to get the new pointer shape", status);
+        return result;
       }
 
       switch(shapeInfo.Type)
